@@ -1,6 +1,0 @@
-.\.venv\Scripts\Activate.ps1
-pip install streamlit azure-ai-formrecognizer
-streamlit run app.py
-
-$env:AZURE_DI_ENDPOINT = "https://azbltfr001.cognitiveservices.azure.com/"
-$env:AZURE_DI_KEY      = "f7d8a921b9ac457a8d904c3bc7a316c5"
