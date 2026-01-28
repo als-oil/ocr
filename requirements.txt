@@ -1,3 +1,4 @@
 streamlit
 azure-ai-formrecognizer
 azure-core
+openpyxl
