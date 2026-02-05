@@ -1,4 +1,8 @@
 streamlit
-azure-ai-formrecognizer
-azure-core
-openpyxl
+azure-ai-formrecognizer 
+openpyxl 
+azure-core 
+pandas 
+pymupdf 
+pillow 
+numpy
