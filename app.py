@@ -1,9 +1,6 @@
-import json
-import datetime
-from pathlib import Path
-from io import BytesIO
 import re
 import unicodedata
+from io import BytesIO
 from difflib import get_close_matches
 
 import streamlit as st
@@ -18,7 +15,16 @@ from azure.core.credentials import AzureKeyCredential
 
 
 # ============================================================
-# 1) EXCEL OUTPUT STRUCTURE (DEFAULT FORMAT)
+# 0) DEPENDENCIES FOR PDF PAGE FILTERING
+# ============================================================
+# requirements.txt (add these):
+# pymupdf
+# pillow
+# numpy
+
+
+# ============================================================
+# 1) EXCEL TEMPLATE (15 COLUMNS) + STYLE
 # ============================================================
 COLETA_COLUMNS = [
     "Chassi Série",
@@ -29,14 +35,16 @@ COLETA_COLUMNS = [
     "Data da Coleta",
     "Óleo trocado",
     "Volume adicionado",
-    "Fabricante (Óleo)",
+    "Fabricante (Óleo)",   # must exist but MUST be empty (manual fill)
     "Viscosidade (Óleo)",
-    "Modelo (Óleo)",
+    "Modelo (Óleo)",       # must exist but MUST be empty (manual fill)
     "Descrição do Óleo",
     "Horas/Km do Fluído",
     "Comentário",
     "Código externo",
 ]
+
+FORCE_EMPTY_IN_EXCEL = {"Fabricante (Óleo)", "Modelo (Óleo)"}
 
 COL_WIDTHS = {
     "Chassi Série": 22,
@@ -57,7 +65,7 @@ COL_WIDTHS = {
 }
 
 GREEN_FILL = PatternFill("solid", fgColor="D9EAD3")
-PINK_FILL  = PatternFill("solid", fgColor="F4CCCC")
+PINK_FILL = PatternFill("solid", fgColor="F4CCCC")
 WHITE_FILL = PatternFill("solid", fgColor="FFFFFF")
 
 GREEN_COLS = {
@@ -91,7 +99,6 @@ CENTER_COLS = {
 
 
 def build_excel_bytes(records: list[dict]) -> bytes:
-    """Build a styled Excel with filters, frozen header, widths, colors, borders and dropdown validations."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Coleta"
@@ -112,25 +119,25 @@ def build_excel_bytes(records: list[dict]) -> bytes:
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:{get_column_letter(len(COLETA_COLUMNS))}1"
 
-    # Data rows
+    # Data rows (force empty manual columns)
     for r_idx, rec in enumerate(records, start=2):
         for c_idx, col_name in enumerate(COLETA_COLUMNS, start=1):
-            ws.cell(row=r_idx, column=c_idx, value=rec.get(col_name, ""))
+            value = "" if col_name in FORCE_EMPTY_IN_EXCEL else rec.get(col_name, "")
+            ws.cell(row=r_idx, column=c_idx, value=value)
 
     max_row = max(2, ws.max_row)
     max_col = len(COLETA_COLUMNS)
 
-    # Column fills + center alignment where needed
+    # Fills + alignment
     for c_idx, col_name in enumerate(COLETA_COLUMNS, start=1):
         fill = GREEN_FILL if col_name in GREEN_COLS else PINK_FILL if col_name in PINK_COLS else WHITE_FILL
-
         for r_idx in range(1, max_row + 1):
             cell = ws.cell(row=r_idx, column=c_idx)
             cell.fill = fill
             if r_idx >= 2 and col_name in CENTER_COLS:
                 cell.alignment = center_align
 
-    # Borders (gridlines + strong vertical separators)
+    # Borders (grid + strong vertical separators)
     thin = Side(style="thin", color="B7B7B7")
     thick = Side(style="medium", color="808080")
 
@@ -149,7 +156,7 @@ def build_excel_bytes(records: list[dict]) -> bytes:
                 bottom=cell.border.bottom,
             )
 
-    # Dropdown validations
+    # Dropdown validations (apply down to 500 rows)
     last_row = max(500, max_row)
 
     def add_list_validation(col_name: str, options: list[str]):
@@ -157,7 +164,6 @@ def build_excel_bytes(records: list[dict]) -> bytes:
             return
         col_idx = COLETA_COLUMNS.index(col_name) + 1
         col_letter = get_column_letter(col_idx)
-
         dv = DataValidation(type="list", formula1=f'"{",".join(options)}"', allow_blank=True, showDropDown=True)
         ws.add_data_validation(dv)
         dv.add(f"{col_letter}2:{col_letter}{last_row}")
@@ -173,7 +179,7 @@ def build_excel_bytes(records: list[dict]) -> bytes:
 
 
 # ============================================================
-# 2) NOTES -> INTERNAL JSON (PARSE EDITABLE NOTES)
+# 2) NORMALIZATION + MAPPING (OCR KEYS -> EXCEL COLUMNS)
 # ============================================================
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
@@ -188,15 +194,16 @@ COL_NORM_MAP = {_norm(c): c for c in COLETA_COLUMNS}
 COL_NORMS = list(COL_NORM_MAP.keys())
 
 SYNONYMS = {
+    # Chassi
     "seriechassi": "Chassi Série",
     "serie/chassi": "Chassi Série",
-    "serie/chassi*": "Chassi Série",
     "serie chassi": "Chassi Série",
     "serie do chassi": "Chassi Série",
     "chassi serie": "Chassi Série",
     "chasis": "Chassi Série",
     "serie/chasis": "Chassi Série",
 
+    # Tag frota
     "frota/tag": "Tag Frota",
     "frota tag": "Tag Frota",
     "tag frota": "Tag Frota",
@@ -206,6 +213,7 @@ SYNONYMS = {
     "flota": "Tag Frota",
     "flota/tag": "Tag Frota",
 
+    # Ponto coleta
     "ponto de coleta": "Ponto de Coleta / Compartimento",
     "ponto de coleta compartimento": "Ponto de Coleta / Compartimento",
     "ponto coleta": "Ponto de Coleta / Compartimento",
@@ -213,19 +221,28 @@ SYNONYMS = {
     "tipo de compartimento": "Ponto de Coleta / Compartimento",
     "tipo compartimento": "Ponto de Coleta / Compartimento",
 
+    # Horimetro
     "horimetro/km/periodo": "Horímetro/Km/Período",
     "horimetro km periodo": "Horímetro/Km/Período",
     "horimetro": "Horímetro/Km/Período",
-    "km/periodo": "Horímetro/Km/Período",
-    "horometrokmperiodo": "Horímetro/Km/Período",
-    "horometro/km/periodo": "Horímetro/Km/Período",
     "horometro": "Horímetro/Km/Período",
+    "km/periodo": "Horímetro/Km/Período",
 
-    # IMPORTANT: Amostra -> Número do Frasco
+        # Óleo / Fluido trocado
+    "oleo trocado": "Óleo trocado",
+    "óleo trocado": "Óleo trocado",
+    "fluido trocado": "Óleo trocado",
+    "fluído trocado": "Óleo trocado",
+    "fluido trocado?": "Óleo trocado",
+    "fluído trocado?": "Óleo trocado",
+    "aceite cambiado": "Óleo trocado",
+    "aceite cambiado?": "Óleo trocado",
+
+    # Número do frasco
     "amostra": "Número do Frasco",
     "muestra": "Número do Frasco",
 
-    # IMPORTANT: Código Ext -> Código externo
+    # Código externo
     "codigo ext/os": "Código externo",
     "codigo ext./os": "Código externo",
     "codigo ext os": "Código externo",
@@ -234,6 +251,7 @@ SYNONYMS = {
     "codigo ext ot": "Código externo",
     "codigo externo": "Código externo",
 
+    # Data
     "data da coleta": "Data da Coleta",
     "data coleta": "Data da Coleta",
     "fecha de muestreo": "Data da Coleta",
@@ -241,39 +259,28 @@ SYNONYMS = {
     "fecha de muestra": "Data da Coleta",
     "fecha": "Data da Coleta",
 
+    # Volume adicionado
     "vol oleo adic": "Volume adicionado",
     "vol. oleo adic": "Volume adicionado",
-    "vol oleo adic.": "Volume adicionado",
-    "vol. oleo adic.": "Volume adicionado",
     "vol fluido adic": "Volume adicionado",
     "vol. fluido adic": "Volume adicionado",
-    "vol fluido adic.": "Volume adicionado",
-    "vol. fluido adic.": "Volume adicionado",
     "vol fluido adicionado": "Volume adicionado",
     "vol. fluido adicionado": "Volume adicionado",
 
+    # Viscosidade
     "viscosidade": "Viscosidade (Óleo)",
-    "viscosidade*": "Viscosidade (Óleo)",
     "viscosidade oleo": "Viscosidade (Óleo)",
     "viscosidad": "Viscosidade (Óleo)",
 
+    # Descrição do óleo
     "fabricante e modelo": "Descrição do Óleo",
-    "fabricante e modelo*": "Descrição do Óleo",
-    "fabricante y modelo de aceite": "Descrição do Óleo",
     "fabricante y modelo": "Descrição do Óleo",
     "descripcion del aceite": "Descrição do Óleo",
     "descricao do oleo": "Descrição do Óleo",
     "descricao do óleo": "Descrição do Óleo",
-    "descricao oleo": "Descrição do Óleo",
     "descricao": "Descrição do Óleo",
 
-    "modelo": "Modelo (Óleo)",
-    "modelo oleo": "Modelo (Óleo)",
-    "modelo (oleo)": "Modelo (Óleo)",
-
-    "fabricante oleo": "Fabricante (Óleo)",
-    "fabricante (oleo)": "Fabricante (Óleo)",
-
+    # Horas/km do fluído
     "horas/km do fluido": "Horas/Km do Fluído",
     "horas km do fluido": "Horas/Km do Fluído",
     "horas/km de aceite": "Horas/Km do Fluído",
@@ -281,36 +288,66 @@ SYNONYMS = {
     "horas/km do oleo": "Horas/Km do Fluído",
     "horas km do oleo": "Horas/Km do Fluído",
 
+    # Comentário
     "observacoes/feedback": "Comentário",
     "observacoes": "Comentário",
-    "observacoes feedback": "Comentário",
-    "observaciones/feedback": "Comentário",
-    "observacion/feedback": "Comentário",
-    "observacion": "Comentário",
     "observaciones": "Comentário",
     "comentario": "Comentário",
     "comentarios": "Comentário",
+
+    # Even if your model emits these, we force blank in output:
+    "fabricante oleo": "Fabricante (Óleo)",
+    "fabricante (oleo)": "Fabricante (Óleo)",
+    "modelo": "Modelo (Óleo)",
+    "modelo oleo": "Modelo (Óleo)",
+    "modelo (oleo)": "Modelo (Óleo)",
 }
 
 
 def _empty_if_none_like(v: str) -> str:
     vv = (v or "").strip()
-    if vv.lower() in ("none", "null", "nan", "-", "n/a", "unselected"):
+    if vv.lower() in ("none", "null", "nan", "-", "n/a", "unselected", "unreadable", "illegible"):
         return ""
     return vv
 
 
+def _expand_two_digit_year(yy: str) -> str:
+    yy = yy.strip()
+    if len(yy) == 2 and yy.isdigit():
+        return "20" + yy
+    return yy
+
+
 def _normalize_date_str(v: str) -> str:
+    """
+    dd/mm/yy -> dd/mm/yyyy
+    dd-mm-yy -> dd/mm/yyyy
+    and if value is ONLY '24' -> '2024'
+    """
     v = _empty_if_none_like(v)
     if not v:
         return ""
-    m = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b", v)
-    if not m:
-        return v
-    d, mo, y = m.group(1), m.group(2), m.group(3)
-    if len(y) == 2:
-        y = "20" + y
-    return f"{int(d):02d}/{int(mo):02d}/{y}"
+
+    vv = v.strip()
+
+    # Only "24" -> "2024"
+    if re.fullmatch(r"\d{2}", vv):
+        return _expand_two_digit_year(vv)
+
+    # dd/mm/yy or dd-mm-yy or dd/mm/yyyy
+    m = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b", vv)
+    if m:
+        d, mo, y = m.group(1), m.group(2), m.group(3)
+        y = _expand_two_digit_year(y)
+        return f"{int(d):02d}/{int(mo):02d}/{y}"
+
+    # yyyy-mm-dd -> dd/mm/yyyy
+    m2 = re.search(r"\b(\d{4})[/-](\d{1,2})[/-](\d{1,2})\b", vv)
+    if m2:
+        y, mo, d = m2.group(1), m2.group(2), m2.group(3)
+        return f"{int(d):02d}/{int(mo):02d}/{y}"
+
+    return vv
 
 
 def clean_value(col_name: str, value: str) -> str:
@@ -322,6 +359,7 @@ def clean_value(col_name: str, value: str) -> str:
         return _normalize_date_str(v)
 
     if col_name in ("Número do Frasco", "Código externo"):
+        # prefer long numeric token (barcode)
         m = re.search(r"\b(\d{6,})\b", v)
         return m.group(1) if m else v
 
@@ -329,253 +367,326 @@ def clean_value(col_name: str, value: str) -> str:
         vn = _norm(v)
         if vn in ("sim", "si", "yes", "selected", "true", "1", "x"):
             return "Sim"
-        if vn in ("nao", "no"):
+        if vn in ("nao", "não", "no"):
             return "Não"
 
     return v
 
 
-def parse_notepad_to_record(notepad_text: str) -> dict:
+def key_to_column(k: str) -> str | None:
+    kn = _norm(k)
+    if kn in SYNONYMS:
+        return SYNONYMS[kn]
+    if kn in COL_NORM_MAP:
+        return COL_NORM_MAP[kn]
+    best = get_close_matches(kn, COL_NORMS, n=1, cutoff=0.78)
+    if best:
+        return COL_NORM_MAP[best[0]]
+    return None
+
+
+def fields_to_record(fields: dict) -> dict:
     record = {c: "" for c in COLETA_COLUMNS}
 
-    for raw_line in (notepad_text or "").splitlines():
-        line = raw_line.strip()
-        if not line or ":" not in line:
+    def is_selected(v) -> bool:
+        return str(v).strip().lower() in ("selected", "sim", "si", "yes", "true", "1", "x")
+
+    for k, v in (fields or {}).items():
+        if v is None:
+            continue
+        v_str = str(v).strip()
+        if _empty_if_none_like(v_str) == "":
             continue
 
-        k, v = line.split(":", 1)
-        k_norm = _norm(k.strip())
-        v = v.strip()
+        kn = _norm(k)
 
-        # óleo/fluido trocado (checkbox style)
-        if ("oleo trocado" in k_norm or "fluido trocado" in k_norm or "aceite cambiado" in k_norm):
-            v_clean = _empty_if_none_like(v).lower()
-            if v_clean in ("selected", "sim", "si", "yes", "x", "1", "true"):
-                if "sim" in k_norm or "si" in k_norm:
+        # checkbox-like "óleo/fluido trocado sim/não"
+                # checkbox-like "óleo/fluido trocado"
+        # Handles:
+        # - "Fluido trocado: Sim"
+        # - "Fluido trocado Sim" = selected
+        # - "Óleo trocado Não" = selected
+        # - "Aceite cambiado: SI"
+        if ("oleo trocado" in kn) or ("fluido trocado" in kn) or ("aceite cambiado" in kn):
+            v_clean = _norm(v_str)
+
+            # Case A: value already sim/nao
+            if v_clean in ("sim", "si", "yes", "true", "1", "x"):
+                record["Óleo trocado"] = "Sim"
+                continue
+            if v_clean in ("nao", "não", "no"):
+                record["Óleo trocado"] = "Não"
+                continue
+
+            # Case B: key contains Sim/Não and value is "selected"
+            if is_selected(v_str):
+                if (" sim" in kn) or kn.endswith(" sim") or (" si" in kn) or kn.endswith(" si"):
                     record["Óleo trocado"] = "Sim"
-                elif "nao" in k_norm or "no" in k_norm or "não" in k_norm:
+                    continue
+                if (" nao" in kn) or (" no" in kn) or kn.endswith(" nao") or kn.endswith(" no"):
                     record["Óleo trocado"] = "Não"
+                    continue
+
+            # Case C: fallback – sim/nao inside free text
+            if "sim" in v_clean:
+                record["Óleo trocado"] = "Sim"
+                continue
+            if "nao" in v_clean or "no" in v_clean:
+                record["Óleo trocado"] = "Não"
+                continue
+
             continue
 
-        if k_norm in SYNONYMS:
-            col = SYNONYMS[k_norm]
-            record[col] = clean_value(col, v)
+        col = key_to_column(k)
+        if not col:
             continue
 
-        if k_norm in COL_NORM_MAP:
-            col = COL_NORM_MAP[k_norm]
-            record[col] = clean_value(col, v)
-            continue
+        record[col] = clean_value(col, v_str)
 
-        best = get_close_matches(k_norm, COL_NORMS, n=1, cutoff=0.78)
-        if best:
-            col = COL_NORM_MAP[best[0]]
-            record[col] = clean_value(col, v)
+    # Always blank these (manual fill)
+    for c in FORCE_EMPTY_IN_EXCEL:
+        record[c] = ""
 
     return record
 
 
 # ============================================================
-# 3) STORAGE (LOCAL)
+# 3) FILTERING: IGNORE NON-FORM PAGES (PDFS WITH MIXED CONTENT)
 # ============================================================
-CLIENTS_DIR = Path("data/clients")
-CLIENTS_DIR.mkdir(parents=True, exist_ok=True)
+def _record_has_signal(rec: dict) -> bool:
+    """
+    Safety net: keep only records that look like real forms.
+    Strong signals:
+    - Número do Frasco or Código externo has >= 6 digits
+    OR
+    - at least 3 key fields filled
+    """
+    def has_big_number(s: str) -> bool:
+        return bool(re.search(r"\b\d{6,}\b", (s or "")))
 
-def list_clients() -> list[str]:
-    return sorted([p.name for p in CLIENTS_DIR.iterdir() if p.is_dir()])
+    if has_big_number(rec.get("Número do Frasco", "")):
+        return True
+    if has_big_number(rec.get("Código externo", "")):
+        return True
 
-def ensure_client_folder(client: str) -> Path:
-    folder = CLIENTS_DIR / client
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder
+    key_fields = [
+        "Chassi Série",
+        "Tag Frota",
+        "Ponto de Coleta / Compartimento",
+        "Horímetro/Km/Período",
+        "Data da Coleta",
+        "Óleo trocado",
+        "Viscosidade (Óleo)",
+        "Descrição do Óleo",
+        "Horas/Km do Fluído",
+    ]
+    filled = sum(1 for k in key_fields if (rec.get(k, "") or "").strip())
+    return filled >= 3
 
-def append_record(client: str, notes_text: str) -> None:
-    folder = ensure_client_folder(client)
-    record = parse_notepad_to_record(notes_text)
-    payload = {
-        "_saved_at": datetime.datetime.utcnow().isoformat() + "Z",
-        "_notes": notes_text,
-        **record,
-    }
-    with (folder / "records.jsonl").open("a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
-def read_records(client: str) -> list[dict]:
-    path = CLIENTS_DIR / client / "records.jsonl"
-    if not path.exists():
-        return []
-    out = []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                out.append(json.loads(line))
-    return out
+def _is_probably_form_page(pil_img) -> bool:
+    """
+    Cheap pre-filter (no Azure call):
+    Form pages have a large darker/grey block on the left half.
+    Non-form pages (cover, preregistration, blank, etc) are more uniformly light.
+    """
+    import numpy as np
+    from PIL import Image
 
-def records_for_excel(records: list[dict]) -> list[dict]:
-    return [{c: r.get(c, "") for c in COLETA_COLUMNS} for r in records]
+    img = pil_img.convert("L")
+    img = img.resize((600, int(600 * img.height / img.width)), Image.BILINEAR)
+
+    arr = np.array(img, dtype=np.float32)
+    h, w = arr.shape
+
+    left = arr[:, : w // 2]
+    right = arr[:, w // 2 :]
+
+    left_mean = float(left.mean())
+    left_std = float(left.std())
+    right_mean = float(right.mean())
+
+    # tuned for this template type
+    looks_like_form = (left_mean < 185) and (left_std > 25)
+    not_blank = (left_mean < 245) or (right_mean < 245)
+
+    return bool(looks_like_form and not_blank)
 
 
 # ============================================================
-# 4) AZURE CONFIG (SECRETS)
+# 4) AZURE DOCUMENT INTELLIGENCE
 # ============================================================
 ENDPOINT = st.secrets["AZURE_DI_ENDPOINT"]
 KEY = st.secrets["AZURE_DI_KEY"]
 MODEL_ID = st.secrets["AZURE_DI_MODEL_ID"]
+
 di_client = DocumentAnalysisClient(ENDPOINT, AzureKeyCredential(KEY))
 
 
-# ============================================================
-# 5) OCR + NOTES
-# ============================================================
-def extract_fields(file_bytes: bytes) -> dict:
+def analyze_bytes(file_bytes: bytes):
     poller = di_client.begin_analyze_document(MODEL_ID, document=file_bytes)
-    result = poller.result()
-    if not result.documents:
-        return {}
-    doc = result.documents[0]
-    out = {}
-    for name, field in doc.fields.items():
-        out[name] = field.value if field.value is not None else field.content
+    return poller.result()
+
+
+def result_to_records(result) -> list[dict]:
+    records: list[dict] = []
+    if getattr(result, "documents", None):
+        for doc in result.documents:
+            fields = {}
+            for name, field in (doc.fields or {}).items():
+                fields[name] = field.value if field.value is not None else field.content
+            records.append(fields_to_record(fields))
+    return records
+
+
+def pdf_split_to_single_page_pdfs(pdf_bytes: bytes) -> list[bytes]:
+    """
+    Splits multi-page PDF into single-page PDF bytes (no rasterization, avoids huge images).
+    Requires: pymupdf
+    """
+    import fitz  # PyMuPDF
+
+    src = fitz.open(stream=pdf_bytes, filetype="pdf")
+    out: list[bytes] = []
+    for i in range(src.page_count):
+        dst = fitz.open()
+        dst.insert_pdf(src, from_page=i, to_page=i)
+        out.append(dst.tobytes())
+        dst.close()
+    src.close()
     return out
 
 
-def build_notepad_text(fields: dict) -> str:
-    """All available info, excluding None/unselected/unreadable; show only selected checkboxes."""
-    def is_unavailable(v) -> bool:
-        if v is None:
-            return True
-        vv = str(v).strip()
-        if not vv:
-            return True
-        return vv.lower() in ("none", "null", "nan", "-", "n/a", "unselected", "unreadable", "illegible")
+def pdf_single_page_pdf_to_pil(single_page_pdf_bytes: bytes, dpi: int = 72):
+    """
+    Renders a single-page PDF to a small PIL image only for classification.
+    Low DPI keeps it fast and avoids size limits.
+    Requires: pymupdf, pillow
+    """
+    import fitz
+    from PIL import Image
+    import io
 
-    def is_selected(v) -> bool:
-        return str(v).strip().lower() in ("selected", "sim", "si", "yes", "true", "1", "x")
+    doc = fitz.open(stream=single_page_pdf_bytes, filetype="pdf")
+    page = doc[0]
+    pix = page.get_pixmap(dpi=dpi, alpha=False)
+    doc.close()
 
-    lines = []
-    for k, v in (fields or {}).items():
-        if is_unavailable(v):
-            continue
+    return Image.open(io.BytesIO(pix.tobytes("png")))
 
-        k_norm = _norm(k)
-        v_str = str(v).strip()
-        v_low = v_str.lower()
 
-        # generic checkbox
-        if v_low == "selected":
-            lines.append(f"{k}: selected")
-            continue
+def extract_records_from_upload(file_bytes: bytes, mime_type: str) -> tuple[list[dict], dict]:
+    """
+    Returns (records, stats).
+    - Images: analyze once.
+    - PDFs: split into single-page PDFs; pre-filter pages (form-like) to avoid OCR on non-forms;
+            then analyze only candidates; post-filter records as a safety net.
+    """
+    stats = {
+        "pdf_pages_total": 0,
+        "pdf_pages_candidates": 0,
+        "records_before_filter": 0,
+        "records_after_filter": 0,
+        "skipped_pages": 0,
+    }
 
-        # óleo/fluido trocado (only if selected)
-        if ("oleo trocado" in k_norm) or ("fluido trocado" in k_norm):
-            if is_selected(v_str):
-                if "sim" in k_norm or "si" in k_norm:
-                    lines.append(f"{k}: Sim")
-                elif "nao" in k_norm or "não" in k_norm or "no" in k_norm:
-                    lines.append(f"{k}: Não")
-                else:
-                    lines.append(f"{k}: {v_str}")
-            continue
+    # Non-PDF: single call
+    if mime_type != "application/pdf":
+        result = analyze_bytes(file_bytes)
+        records = result_to_records(result)
+        stats["records_before_filter"] = len(records)
+        records = [r for r in records if _record_has_signal(r)]
+        stats["records_after_filter"] = len(records)
+        return records, stats
 
-        lines.append(f"{k}: {v_str}")
+    # PDF: split pages
+    page_pdfs = pdf_split_to_single_page_pdfs(file_bytes)
+    stats["pdf_pages_total"] = len(page_pdfs)
 
-    lines.sort(key=lambda s: _norm(s.split(":", 1)[0]))
-    return "\n".join(lines)
+    # Pre-filter (local classifier)
+    candidate_pages: list[bytes] = []
+    for spdf in page_pdfs:
+        try:
+            pil = pdf_single_page_pdf_to_pil(spdf, dpi=72)
+            if _is_probably_form_page(pil):
+                candidate_pages.append(spdf)
+            else:
+                stats["skipped_pages"] += 1
+        except Exception:
+            # failsafe: if classification fails, keep page (better than losing data)
+            candidate_pages.append(spdf)
+
+    stats["pdf_pages_candidates"] = len(candidate_pages)
+
+    # OCR only candidate pages
+    all_records: list[dict] = []
+    for spdf in candidate_pages:
+        result = analyze_bytes(spdf)
+        all_records.extend(result_to_records(result))
+
+    stats["records_before_filter"] = len(all_records)
+
+    # Post-filter (safety net)
+    cleaned = [r for r in all_records if _record_has_signal(r)]
+    stats["records_after_filter"] = len(cleaned)
+
+    return cleaned, stats
 
 
 # ============================================================
-# 6) UI
+# 5) STREAMLIT UI (ONLY: UPLOAD -> EXTRACT -> DOWNLOAD EXCEL)
 # ============================================================
-st.title("OCR – Cartão de Óleo")
+st.title("OCR – Cartão de Óleo → Excel")
+st.caption("Fluxo: enviar arquivo → extrair → baixar Excel. (Ignora páginas que não são formulário.)")
 
-uploaded_file = st.file_uploader("Envie o arquivo do cartão", type=["jpg", "jpeg", "png", "pdf"])
-
-st.session_state.setdefault("last_fields", None)
-st.session_state.setdefault("notes_text", "")
-st.session_state.setdefault("last_filename", "")
-
-st.markdown("### 1) Extrair com OCR")
+uploaded_file = st.file_uploader(
+    "Envie um cartão (imagem) ou um PDF com várias páginas (formulários misturados)",
+    type=["jpg", "jpeg", "png", "pdf"],
+)
 
 if uploaded_file is not None and uploaded_file.type.startswith("image/"):
     st.image(uploaded_file, caption="Imagem enviada")
 
-if uploaded_file is not None and st.button("Extrair dados com OCR"):
+if uploaded_file is None:
+    st.info("Envie um arquivo para habilitar a extração.")
+    st.stop()
+
+st.markdown("### Extrair e gerar Excel")
+
+if st.button("🚀 Extrair somente formulários e baixar Excel"):
     with st.spinner("Processando..."):
         try:
-            fields = extract_fields(uploaded_file.getvalue())
+            records, stats = extract_records_from_upload(uploaded_file.getvalue(), uploaded_file.type)
         except Exception as e:
-            st.error(f"Erro ao chamar o modelo: {e}")
+            st.error(f"Erro ao processar: {e}")
             st.stop()
 
-    if not fields:
-        st.warning("Nenhum campo retornado.")
-    else:
-        st.session_state.last_fields = fields
-        st.session_state.notes_text = build_notepad_text(fields)
-        st.session_state.last_filename = uploaded_file.name
+    if uploaded_file.type == "application/pdf":
+        st.write(
+            f"PDF: {stats['pdf_pages_total']} páginas | "
+            f"candidatas (form): {stats['pdf_pages_candidates']} | "
+            f"ignoradas: {stats['skipped_pages']}"
+        )
 
-if st.session_state.last_fields:
-    st.subheader("Bloco de notas (edite se precisar)")
-    st.session_state.notes_text = st.text_area(
-        "Notas (fonte para gerar Excel)",
-        st.session_state.notes_text,
-        height=280,
+    st.write(f"Registros (antes do filtro): {stats['records_before_filter']}")
+    st.write(f"Registros (após filtro): **{stats['records_after_filter']}**")
+
+    if not records:
+        st.warning("Não consegui extrair registros úteis (ou todas as páginas foram classificadas como não-formulário).")
+        st.stop()
+
+    with st.expander("Prévia (primeiras 5 linhas)"):
+        for i, rec in enumerate(records[:5], start=1):
+            st.markdown(f"**Linha {i}**")
+            for c in COLETA_COLUMNS:
+                st.write(f"- {c}: {rec.get(c, '')}")
+            st.divider()
+
+    excel_bytes = build_excel_bytes(records)
+    st.download_button(
+        "📥 Baixar Excel",
+        data=excel_bytes,
+        file_name="coleta.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-    with st.expander("Prévia do que vai para o Excel (15 colunas)"):
-        preview = parse_notepad_to_record(st.session_state.notes_text)
-        for c in COLETA_COLUMNS:
-            st.write(f"**{c}**: {preview.get(c, '')}")
-
-
-st.markdown("### 2) Salvar extração em um cliente / Exportar 1 linha (não salva)")
-
-if not st.session_state.last_fields:
-    st.info("Primeiro faça a extração com OCR para poder salvar/exportar.")
-else:
-    clients = list_clients()
-    choice = st.selectbox("Cliente", ["(novo...)"] + clients)
-
-    client_name = st.text_input("Nome do novo cliente").strip() if choice == "(novo...)" else choice
-
-    colA, colB = st.columns(2)
-
-    with colA:
-        if st.button("💾 Salvar esta extração"):
-            if not client_name:
-                st.warning("Informe o nome do cliente.")
-            else:
-                append_record(client_name, st.session_state.notes_text)
-                st.success(f"Salvo em data/clients/{client_name}/records.jsonl")
-
-    with colB:
-        if st.button("📄 Gerar Excel (1 linha, não salva)"):
-            record = parse_notepad_to_record(st.session_state.notes_text)
-            excel_bytes = build_excel_bytes([record])
-            st.download_button(
-                "📥 Baixar Excel (1 linha)",
-                data=excel_bytes,
-                file_name="coleta_1_linha.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-
-
-st.markdown("### 3) Exportar Excel por cliente")
-
-clients = list_clients()
-if not clients:
-    st.info("Nenhum cliente salvo ainda.")
-else:
-    client_to_export = st.selectbox("Cliente para exportar", clients, key="export_client")
-    records = read_records(client_to_export)
-    st.write(f"Registros: **{len(records)}**")
-
-    if records and st.button("Gerar Excel (cliente)"):
-        excel_bytes = build_excel_bytes(records_for_excel(records))
-        st.download_button(
-            "📥 Baixar Excel do cliente",
-            data=excel_bytes,
-            file_name=f"{client_to_export}_coleta.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
