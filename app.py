@@ -76,110 +76,93 @@ GREEN_COLS = {
     "Modelo (Óleo)",
     "Descrição do Óleo",
     "Horas/Km do Fluído",
-    "Comentário",
     "Código externo",
 }
+
 PINK_COLS = {
+    "Chassi Série",
+    "Tag Frota",
+    "Ponto de Coleta / Compartimento",
     "Número do Frasco",
     "Fabricante (Óleo)",
     "Viscosidade (Óleo)",
+    "Comentário",
 }
 
-DV_PONTO_COLETA = ["MOTOR", "REDUTOR", "TRANSMISSÃO", "DIFERENCIAL", "HIDRÁULICO", "COMPRESSOR", "RADIADOR", "OUTROS"]
-DV_OLEO_TROCADO = ["Sim", "Não"]
-DV_DESCRICAO = ["SINTÉTICO", "MINERAL"]
+HEADER_FONT = Font(bold=True)
+CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
+LEFT = Alignment(horizontal="left", vertical="center", wrap_text=True)
 
-CENTER_COLS = {
-    "Número do Frasco",
-    "Código externo",
-    "Data da Coleta",
-    "Óleo trocado",
-    "Horímetro/Km/Período",
-}
+thin = Side(border_style="thin", color="999999")
+BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+# Drop-down for "Óleo trocado"
+OIL_TROCADO_OPTIONS = ["Sim", "Não", ""]
 
 
-def build_excel_bytes(records: list[dict]) -> bytes:
+def create_template_workbook() -> openpyxl.Workbook:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Coleta"
-    wb.create_sheet("Referências")
 
-    header_font = Font(bold=True)
-    header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    center_align = Alignment(horizontal="center", vertical="center")
+    # Header row
+    ws.append(COLETA_COLUMNS)
+    ws.row_dimensions[1].height = 28
 
-    # Header
     for col_idx, col_name in enumerate(COLETA_COLUMNS, start=1):
         cell = ws.cell(row=1, column=col_idx, value=col_name)
-        cell.font = header_font
-        cell.alignment = header_align
+        cell.font = HEADER_FONT
+        cell.alignment = CENTER
+        cell.border = BORDER
+
+        # Fill
+        if col_name in GREEN_COLS:
+            cell.fill = GREEN_FILL
+        elif col_name in PINK_COLS:
+            cell.fill = PINK_FILL
+        else:
+            cell.fill = WHITE_FILL
+
+        # Column widths
         ws.column_dimensions[get_column_letter(col_idx)].width = COL_WIDTHS.get(col_name, 18)
-    ws.row_dimensions[1].height = 22
 
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(COLETA_COLUMNS))}1"
+    # Data Validation for Óleo trocado
+    oil_col = COLETA_COLUMNS.index("Óleo trocado") + 1
+    dv = DataValidation(type="list", formula1=f'"{",".join(OIL_TROCADO_OPTIONS)}"', allow_blank=True)
+    ws.add_data_validation(dv)
+    dv.add(f"{get_column_letter(oil_col)}2:{get_column_letter(oil_col)}5000")
 
-    # Data rows (force empty manual columns)
-    for r_idx, rec in enumerate(records, start=2):
+    return wb
+
+
+def write_records_to_workbook(wb: openpyxl.Workbook, records: list[dict]) -> openpyxl.Workbook:
+    ws = wb["Coleta"]
+
+    for rec in records:
+        row = [rec.get(c, "") for c in COLETA_COLUMNS]
+        ws.append(row)
+
+    # Styling for data rows
+    for r in range(2, ws.max_row + 1):
+        ws.row_dimensions[r].height = 24
         for c_idx, col_name in enumerate(COLETA_COLUMNS, start=1):
-            value = "" if col_name in FORCE_EMPTY_IN_EXCEL else rec.get(col_name, "")
-            ws.cell(row=r_idx, column=c_idx, value=value)
+            cell = ws.cell(row=r, column=c_idx)
+            cell.alignment = LEFT
+            cell.border = BORDER
 
-    max_row = max(2, ws.max_row)
-    max_col = len(COLETA_COLUMNS)
+            # Fill pattern like header
+            if col_name in GREEN_COLS:
+                cell.fill = GREEN_FILL
+            elif col_name in PINK_COLS:
+                cell.fill = PINK_FILL
+            else:
+                cell.fill = WHITE_FILL
 
-    # Fills + alignment
-    for c_idx, col_name in enumerate(COLETA_COLUMNS, start=1):
-        fill = GREEN_FILL if col_name in GREEN_COLS else PINK_FILL if col_name in PINK_COLS else WHITE_FILL
-        for r_idx in range(1, max_row + 1):
-            cell = ws.cell(row=r_idx, column=c_idx)
-            cell.fill = fill
-            if r_idx >= 2 and col_name in CENTER_COLS:
-                cell.alignment = center_align
-
-    # Borders (grid + strong vertical separators)
-    thin = Side(style="thin", color="B7B7B7")
-    thick = Side(style="medium", color="808080")
-
-    for r in range(1, max_row + 1):
-        for c in range(1, max_col + 1):
-            ws.cell(row=r, column=c).border = Border(left=thin, right=thin, top=thin, bottom=thin)
-
-    for c in range(1, max_col + 1):
-        col_letter = get_column_letter(c)
-        for r in range(1, max_row + 1):
-            cell = ws[f"{col_letter}{r}"]
-            cell.border = Border(
-                left=cell.border.left,
-                right=thick,
-                top=cell.border.top,
-                bottom=cell.border.bottom,
-            )
-
-    # Dropdown validations (apply down to 500 rows)
-    last_row = max(500, max_row)
-
-    def add_list_validation(col_name: str, options: list[str]):
-        if col_name not in COLETA_COLUMNS:
-            return
-        col_idx = COLETA_COLUMNS.index(col_name) + 1
-        col_letter = get_column_letter(col_idx)
-        dv = DataValidation(type="list", formula1=f'"{",".join(options)}"', allow_blank=True, showDropDown=True)
-        ws.add_data_validation(dv)
-        dv.add(f"{col_letter}2:{col_letter}{last_row}")
-
-    add_list_validation("Ponto de Coleta / Compartimento", DV_PONTO_COLETA)
-    add_list_validation("Óleo trocado", DV_OLEO_TROCADO)
-    add_list_validation("Descrição do Óleo", DV_DESCRICAO)
-
-    buf = BytesIO()
-    wb.save(buf)
-    wb.close()
-    return buf.getvalue()
+    return wb
 
 
 # ============================================================
-# 2) NORMALIZATION + MAPPING (OCR KEYS -> EXCEL COLUMNS)
+# 2) NORMALIZATION + FIELD MAPPING
 # ============================================================
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
@@ -228,7 +211,7 @@ SYNONYMS = {
     "horometro": "Horímetro/Km/Período",
     "km/periodo": "Horímetro/Km/Período",
 
-        # Óleo / Fluido trocado
+    # Óleo / Fluido trocado
     "oleo trocado": "Óleo trocado",
     "óleo trocado": "Óleo trocado",
     "fluido trocado": "Óleo trocado",
@@ -324,35 +307,29 @@ def _normalize_date_str(v: str) -> str:
     dd-mm-yy -> dd/mm/yyyy
     and if value is ONLY '24' -> '2024'
     """
+    v = (v or "").strip()
+    if not v:
+        return ""
+
+    if re.fullmatch(r"\d{2}", v):
+        return _expand_two_digit_year(v)
+
+    v2 = v.replace("-", "/")
+    m = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{2,4})", v2)
+    if not m:
+        return v
+
+    dd, mm, yy = m.group(1).zfill(2), m.group(2).zfill(2), m.group(3)
+    yy = _expand_two_digit_year(yy)
+    return f"{dd}/{mm}/{yy}"
+
+
+def clean_value(col_name: str, v: str) -> str:
     v = _empty_if_none_like(v)
     if not v:
         return ""
 
-    vv = v.strip()
-
-    # Only "24" -> "2024"
-    if re.fullmatch(r"\d{2}", vv):
-        return _expand_two_digit_year(vv)
-
-    # dd/mm/yy or dd-mm-yy or dd/mm/yyyy
-    m = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b", vv)
-    if m:
-        d, mo, y = m.group(1), m.group(2), m.group(3)
-        y = _expand_two_digit_year(y)
-        return f"{int(d):02d}/{int(mo):02d}/{y}"
-
-    # yyyy-mm-dd -> dd/mm/yyyy
-    m2 = re.search(r"\b(\d{4})[/-](\d{1,2})[/-](\d{1,2})\b", vv)
-    if m2:
-        y, mo, d = m2.group(1), m2.group(2), m2.group(3)
-        return f"{int(d):02d}/{int(mo):02d}/{y}"
-
-    return vv
-
-
-def clean_value(col_name: str, value: str) -> str:
-    v = _empty_if_none_like(value)
-    if not v:
+    if col_name in FORCE_EMPTY_IN_EXCEL:
         return ""
 
     if col_name == "Data da Coleta":
@@ -375,10 +352,16 @@ def clean_value(col_name: str, value: str) -> str:
 
 def key_to_column(k: str) -> str | None:
     kn = _norm(k)
+
+    # Heuristic: some models emit "Horas/Km do Fluído" with unexpected variations.
+    if (("horas" in kn) or ("hora" in kn) or ("km" in kn)) and (("fluido" in kn) or ("oleo" in kn) or ("aceite" in kn)):
+        return "Horas/Km do Fluído"
+
     if kn in SYNONYMS:
         return SYNONYMS[kn]
     if kn in COL_NORM_MAP:
         return COL_NORM_MAP[kn]
+
     best = get_close_matches(kn, COL_NORMS, n=1, cutoff=0.78)
     if best:
         return COL_NORM_MAP[best[0]]
@@ -400,35 +383,38 @@ def fields_to_record(fields: dict) -> dict:
 
         kn = _norm(k)
 
-        # checkbox-like "óleo/fluido trocado sim/não"
-                # checkbox-like "óleo/fluido trocado"
-        # Handles:
-        # - "Fluido trocado: Sim"
-        # - "Fluido trocado Sim" = selected
-        # - "Óleo trocado Não" = selected
-        # - "Aceite cambiado: SI"
-        if ("oleo trocado" in kn) or ("fluido trocado" in kn) or ("aceite cambiado" in kn):
+        # checkbox-like "óleo/fluido trocado"
+        # Models may emit:
+        # - a single field with value "Sim/Não"
+        # - two option fields (Sim/Não) with value "selected/true/x"
+        # - keys without separators (e.g., "...Sim")
+        if ("oleo trocado" in kn) or ("fluido trocado" in kn) or ("aceite cambiado" in kn) or ("fluido trocado" in kn.replace(" ", "")):
+
             v_clean = _norm(v_str)
 
-            # Case A: value already sim/nao
-            if v_clean in ("sim", "si", "yes", "true", "1", "x"):
-                record["Óleo trocado"] = "Sim"
-                continue
-            if v_clean in ("nao", "não", "no"):
-                record["Óleo trocado"] = "Não"
+            def _yesno_from_token(s: str) -> str | None:
+                # kn/v_clean are already normalized (no accents)
+                if re.search(r"(sim|si|yes)$", s) or re.search(r"\b(sim|si|yes)\b", s):
+                    return "Sim"
+                if re.search(r"(nao|no)$", s) or re.search(r"\b(nao|no)\b", s):
+                    return "Não"
+                return None
+
+            # Case A: value itself already indicates yes/no
+            yn = _yesno_from_token(v_clean)
+            if yn:
+                record["Óleo trocado"] = yn
                 continue
 
-            # Case B: key contains Sim/Não and value is "selected"
+            # Case B: key indicates the option and value indicates selection
             if is_selected(v_str):
-                if (" sim" in kn) or kn.endswith(" sim") or (" si" in kn) or kn.endswith(" si"):
-                    record["Óleo trocado"] = "Sim"
-                    continue
-                if (" nao" in kn) or (" no" in kn) or kn.endswith(" nao") or kn.endswith(" no"):
-                    record["Óleo trocado"] = "Não"
+                ynk = _yesno_from_token(kn.replace(" ", ""))
+                if ynk:
+                    record["Óleo trocado"] = ynk
                     continue
 
-            # Case C: fallback – sim/nao inside free text
-            if "sim" in v_clean:
+            # Case C: free-text fallback
+            if "sim" in v_clean or "si" in v_clean or "yes" in v_clean:
                 record["Óleo trocado"] = "Sim"
                 continue
             if "nao" in v_clean or "no" in v_clean:
@@ -484,33 +470,31 @@ def _record_has_signal(rec: dict) -> bool:
     return filled >= 3
 
 
-def _is_probably_form_page(pil_img) -> bool:
+def _looks_like_form_by_fields(raw_fields: dict) -> bool:
     """
-    Cheap pre-filter (no Azure call):
-    Form pages have a large darker/grey block on the left half.
-    Non-form pages (cover, preregistration, blank, etc) are more uniformly light.
+    Decide if a page is a form based on which fields the model detected.
+
+    The idea:
+    - If the model extracted "enough" of the expected form field keys, it's a form page.
     """
-    import numpy as np
-    from PIL import Image
+    if not raw_fields:
+        return False
 
-    img = pil_img.convert("L")
-    img = img.resize((600, int(600 * img.height / img.width)), Image.BILINEAR)
+    expected_signals = [
+        "serie", "chassi", "tag", "frota", "compartimento", "ponto", "coleta",
+        "horimetro", "horometro", "periodo", "amostra", "muestra", "codigo",
+        "data", "fecha", "viscos", "descricao", "aceite", "oleo", "fluido",
+        "horas", "km"
+    ]
 
-    arr = np.array(img, dtype=np.float32)
-    h, w = arr.shape
+    keys_norm = [_norm(k) for k in raw_fields.keys()]
+    matches = 0
+    for kn in keys_norm:
+        if any(sig in kn for sig in expected_signals):
+            matches += 1
 
-    left = arr[:, : w // 2]
-    right = arr[:, w // 2 :]
-
-    left_mean = float(left.mean())
-    left_std = float(left.std())
-    right_mean = float(right.mean())
-
-    # tuned for this template type
-    looks_like_form = (left_mean < 185) and (left_std > 25)
-    not_blank = (left_mean < 245) or (right_mean < 245)
-
-    return bool(looks_like_form and not_blank)
+    # Threshold: tuneable. 3 is a good starting point for "at least part of the form"
+    return matches >= 3
 
 
 # ============================================================
@@ -539,98 +523,63 @@ def result_to_records(result) -> list[dict]:
     return records
 
 
-def pdf_split_to_single_page_pdfs(pdf_bytes: bytes) -> list[bytes]:
-    """
-    Splits multi-page PDF into single-page PDF bytes (no rasterization, avoids huge images).
-    Requires: pymupdf
-    """
-    import fitz  # PyMuPDF
+# ============================================================
+# 4b) PDF SPLITTING (FOR MIXED PDFs) — ONLY KEEP FORM PAGES
+# ============================================================
+def split_pdf_into_pages(pdf_bytes: bytes) -> list[bytes]:
+    import fitz  # pymupdf
 
+    pages = []
     src = fitz.open(stream=pdf_bytes, filetype="pdf")
-    out: list[bytes] = []
     for i in range(src.page_count):
-        dst = fitz.open()
-        dst.insert_pdf(src, from_page=i, to_page=i)
-        out.append(dst.tobytes())
-        dst.close()
+        doc = fitz.open()
+        doc.insert_pdf(src, from_page=i, to_page=i)
+        pages.append(doc.tobytes())
+        doc.close()
     src.close()
-    return out
+    return pages
 
 
-def pdf_single_page_pdf_to_pil(single_page_pdf_bytes: bytes, dpi: int = 72):
+def extract_records_from_upload(file_bytes: bytes, mime: str) -> tuple[list[dict], dict]:
     """
-    Renders a single-page PDF to a small PIL image only for classification.
-    Low DPI keeps it fast and avoids size limits.
-    Requires: pymupdf, pillow
+    Returns (records, stats)
+    stats example: {"total_pages": 10, "kept_pages": 6, "dropped_pages": 4}
     """
-    import fitz
-    from PIL import Image
-    import io
+    stats = {"total_pages": 1, "kept_pages": 0, "dropped_pages": 0}
 
-    doc = fitz.open(stream=single_page_pdf_bytes, filetype="pdf")
-    page = doc[0]
-    pix = page.get_pixmap(dpi=dpi, alpha=False)
-    doc.close()
+    # PDF: split into pages and analyze each page (ignore non-form pages)
+    if mime == "application/pdf":
+        pages = split_pdf_into_pages(file_bytes)
+        stats["total_pages"] = len(pages)
 
-    return Image.open(io.BytesIO(pix.tobytes("png")))
+        records: list[dict] = []
+        for pbytes in pages:
+            result = analyze_bytes(pbytes)
 
+            # Keep page if it "looks like a form" by detected fields OR by filled record signals
+            raw_fields = {}
+            if getattr(result, "documents", None):
+                for doc in result.documents:
+                    for name, field in (doc.fields or {}).items():
+                        raw_fields[name] = field.value if field.value is not None else field.content
 
-def extract_records_from_upload(file_bytes: bytes, mime_type: str) -> tuple[list[dict], dict]:
-    """
-    Returns (records, stats).
-    - Images: analyze once.
-    - PDFs: split into single-page PDFs; pre-filter pages (form-like) to avoid OCR on non-forms;
-            then analyze only candidates; post-filter records as a safety net.
-    """
-    stats = {
-        "pdf_pages_total": 0,
-        "pdf_pages_candidates": 0,
-        "records_before_filter": 0,
-        "records_after_filter": 0,
-        "skipped_pages": 0,
-    }
+            page_records = result_to_records(result)
+            keep = _looks_like_form_by_fields(raw_fields) or any(_record_has_signal(r) for r in page_records)
 
-    # Non-PDF: single call
-    if mime_type != "application/pdf":
-        result = analyze_bytes(file_bytes)
-        records = result_to_records(result)
-        stats["records_before_filter"] = len(records)
-        records = [r for r in records if _record_has_signal(r)]
-        stats["records_after_filter"] = len(records)
+            if keep:
+                records.extend([r for r in page_records if _record_has_signal(r)])
+                stats["kept_pages"] += 1
+            else:
+                stats["dropped_pages"] += 1
+
         return records, stats
 
-    # PDF: split pages
-    page_pdfs = pdf_split_to_single_page_pdfs(file_bytes)
-    stats["pdf_pages_total"] = len(page_pdfs)
-
-    # Pre-filter (local classifier)
-    candidate_pages: list[bytes] = []
-    for spdf in page_pdfs:
-        try:
-            pil = pdf_single_page_pdf_to_pil(spdf, dpi=72)
-            if _is_probably_form_page(pil):
-                candidate_pages.append(spdf)
-            else:
-                stats["skipped_pages"] += 1
-        except Exception:
-            # failsafe: if classification fails, keep page (better than losing data)
-            candidate_pages.append(spdf)
-
-    stats["pdf_pages_candidates"] = len(candidate_pages)
-
-    # OCR only candidate pages
-    all_records: list[dict] = []
-    for spdf in candidate_pages:
-        result = analyze_bytes(spdf)
-        all_records.extend(result_to_records(result))
-
-    stats["records_before_filter"] = len(all_records)
-
-    # Post-filter (safety net)
-    cleaned = [r for r in all_records if _record_has_signal(r)]
-    stats["records_after_filter"] = len(cleaned)
-
-    return cleaned, stats
+    # Image (jpg/png/etc): just analyze once
+    result = analyze_bytes(file_bytes)
+    records = [r for r in result_to_records(result) if _record_has_signal(r)]
+    stats["kept_pages"] = 1 if records else 0
+    stats["dropped_pages"] = 0 if records else 1
+    return records, stats
 
 
 # ============================================================
@@ -639,54 +588,47 @@ def extract_records_from_upload(file_bytes: bytes, mime_type: str) -> tuple[list
 st.title("OCR – Cartão de Óleo → Excel")
 st.caption("Fluxo: enviar arquivo → extrair → baixar Excel. (Ignora páginas que não são formulário.)")
 
-uploaded_file = st.file_uploader(
-    "Envie um cartão (imagem) ou um PDF com várias páginas (formulários misturados)",
+uploaded_files = st.file_uploader(
+    "Envie 1+ cartões (imagens) ou PDFs",
     type=["jpg", "jpeg", "png", "pdf"],
+    accept_multiple_files=True,
 )
 
-if uploaded_file is not None and uploaded_file.type.startswith("image/"):
-    st.image(uploaded_file, caption="Imagem enviada")
+if uploaded_files:
+    all_records = []
+    total_stats = {"total_pages": 0, "kept_pages": 0, "dropped_pages": 0}
 
-if uploaded_file is None:
-    st.info("Envie um arquivo para habilitar a extração.")
-    st.stop()
+    for uf in uploaded_files:
+        file_bytes = uf.getvalue()
+        mime = uf.type
 
-st.markdown("### Extrair e gerar Excel")
+        records, stats = extract_records_from_upload(file_bytes, mime)
 
-if st.button("🚀 Extrair somente formulários e baixar Excel"):
-    with st.spinner("Processando..."):
-        try:
-            records, stats = extract_records_from_upload(uploaded_file.getvalue(), uploaded_file.type)
-        except Exception as e:
-            st.error(f"Erro ao processar: {e}")
-            st.stop()
+        all_records.extend(records)
+        total_stats["total_pages"] += stats.get("total_pages", 1)
+        total_stats["kept_pages"] += stats.get("kept_pages", 0)
+        total_stats["dropped_pages"] += stats.get("dropped_pages", 0)
 
-    if uploaded_file.type == "application/pdf":
-        st.write(
-            f"PDF: {stats['pdf_pages_total']} páginas | "
-            f"candidatas (form): {stats['pdf_pages_candidates']} | "
-            f"ignoradas: {stats['skipped_pages']}"
+    if not all_records:
+        st.warning("Nenhum formulário identificado nos arquivos enviados.")
+    else:
+        wb = create_template_workbook()
+        wb = write_records_to_workbook(wb, all_records)
+
+        out = BytesIO()
+        wb.save(out)
+        out.seek(0)
+
+        st.success(
+            f"Extração concluída. Registros: {len(all_records)} | "
+            f"Páginas/arquivos: {total_stats['total_pages']} | "
+            f"Mantidas: {total_stats['kept_pages']} | "
+            f"Ignoradas: {total_stats['dropped_pages']}"
         )
 
-    st.write(f"Registros (antes do filtro): {stats['records_before_filter']}")
-    st.write(f"Registros (após filtro): **{stats['records_after_filter']}**")
-
-    if not records:
-        st.warning("Não consegui extrair registros úteis (ou todas as páginas foram classificadas como não-formulário).")
-        st.stop()
-
-    with st.expander("Prévia (primeiras 5 linhas)"):
-        for i, rec in enumerate(records[:5], start=1):
-            st.markdown(f"**Linha {i}**")
-            for c in COLETA_COLUMNS:
-                st.write(f"- {c}: {rec.get(c, '')}")
-            st.divider()
-
-    excel_bytes = build_excel_bytes(records)
-    st.download_button(
-        "📥 Baixar Excel",
-        data=excel_bytes,
-        file_name="coleta.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-
+        st.download_button(
+            "Baixar Excel",
+            data=out,
+            file_name="coleta.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
