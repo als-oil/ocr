@@ -761,7 +761,8 @@ def _load_oil_reference():
 
 def _fuzzy_match_reference(value: str, ref_map: dict, cutoff: float = 0.78,
                             strip_sae: bool = False,
-                            strip_trailing_visc: bool = False) -> tuple[str, bool]:
+                            strip_trailing_visc: bool = False,
+                            match_first_token: bool = False) -> tuple[str, bool]:
     """Returns (possibly-corrected value, matched). matched=False means the
     value wasn't found in the catalog (exact or close) — flag as suspicious.
 
@@ -769,7 +770,12 @@ def _fuzzy_match_reference(value: str, ref_map: dict, cutoff: float = 0.78,
     removing a viscosity number glued onto the end of the name (e.g. the OCR read
     "Rimula Rf4C 154140" — the "154140" is a mis-read 15W40 stuck to the model).
     Catalog model names never carry the viscosity, so "Rimula Rf4C" then matches
-    "RIMULA R4" cleanly."""
+    "RIMULA R4" cleanly.
+
+    match_first_token: when the whole string fails, try matching just the FIRST
+    word (the brand) against the catalog and, if it matches, fix only that word
+    keeping the rest (e.g. "KLUBEN SH 46" → brand "KLUBEN"→"KLUBER" → "KLUBER SH 46";
+    "BARDAHZ 68 AW HLP" → "BARDAHL 68 AW HLP")."""
     if not value or not ref_map:
         return value, True
     if strip_sae:
@@ -797,7 +803,41 @@ def _fuzzy_match_reference(value: str, ref_map: dict, cutoff: float = 0.78,
                 if best2:
                     return ref_map[best2[0]], True
 
+    # Third pass: match just the first word (brand) and fix only it.
+    if match_first_token:
+        parts = value.split()
+        if len(parts) >= 2 and len(parts[0]) >= 3:
+            tkey = _norm(parts[0])
+            brand = None
+            if tkey in ref_map:
+                brand = ref_map[tkey]
+            else:
+                bt = get_close_matches(tkey, keys, n=1, cutoff=cutoff)
+                if bt:
+                    brand = ref_map[bt[0]]
+            if brand:
+                return (brand + " " + " ".join(parts[1:])).strip(), True
+
     return value, False
+
+
+def _normalize_viscosity(v: str) -> str:
+    """Deterministic viscosity cleanup (NO fuzzy — avoids 18W40→85W40 mistakes):
+      - drops non-viscosity qualifiers (SINT./SINTÉTICO/MINERAL)
+      - 'UG' → 'VG'  (the OCR reads the V as a U): "UG 46" → "VG 46"
+      - adds 'ISO' before a bare 'VG': "VG 46" → "ISO VG 46"
+      - tightens SAE spacing: "15 W 40" → "15W40"
+    """
+    s = (v or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"(?i)\b(sint[ée]tico|sint\.?|mineral|semi[-\s]?sint\.?)\b", "", s)
+    s = re.sub(r"(?i)\bUG\b", "VG", s)
+    if re.search(r"(?i)\bVG\b", s) and not re.search(r"(?i)\biso\b", s):
+        s = re.sub(r"(?i)\bVG\b", "ISO VG", s, count=1)
+    s = re.sub(r"(?<![A-Za-z])(\d{1,3})\s*[Ww]\s*(\d{2,3})(?!\d)", r"\1W\2", s)
+    s = re.sub(r"\s{2,}", " ", s)
+    return s.strip(" .")
 
 
 def _normalize_oil_description(text: str) -> str:
@@ -2818,10 +2858,12 @@ def fields_to_record(fields: dict, page=None, confidences: dict = None, page_byt
     # "Rimula Rf4C 154140" → "RIMULA R4").
     _fab_val = record.get("Fabricante (Óleo)", "")
     if _fab_val:
-        _corr, _matched = _fuzzy_match_reference(_fab_val, _fab_map, cutoff=0.82)
+        _corr, _matched = _fuzzy_match_reference(
+            _fab_val, _fab_map, cutoff=0.82, match_first_token=True
+        )
         if not _matched:
             _corr2, _matched2 = _fuzzy_match_reference(
-                _fab_val, _mod_map, cutoff=0.82, strip_trailing_visc=True
+                _fab_val, _mod_map, cutoff=0.82, strip_trailing_visc=True, match_first_token=True
             )
             if _matched2:
                 _corr, _matched = _corr2, True
@@ -2833,7 +2875,7 @@ def fields_to_record(fields: dict, page=None, confidences: dict = None, page_byt
     _mod_val = record.get("Modelo (Óleo)", "")
     if _mod_val:
         _corr, _matched = _fuzzy_match_reference(
-            _mod_val, _mod_map, cutoff=0.82, strip_trailing_visc=True
+            _mod_val, _mod_map, cutoff=0.82, strip_trailing_visc=True, match_first_token=True
         )
         if _matched:
             record["Modelo (Óleo)"] = _corr
@@ -2869,8 +2911,8 @@ def fields_to_record(fields: dict, page=None, confidences: dict = None, page_byt
     if _name_confs:
         _conf["Fabricante/Modelo"] = min(_name_confs)
 
-    # --- Viscosidade (kept in its own column, lightly normalized) ---
-    record["Viscosidade (Óleo)"] = _fix_visc_spacing(record.get("Viscosidade (Óleo)") or "")
+    # --- Viscosidade (own column; deterministic normalization) ---
+    record["Viscosidade (Óleo)"] = _normalize_viscosity(record.get("Viscosidade (Óleo)") or "")
 
     # The OCR sometimes dumps the brand into the viscosity field (e.g. the person
     # wrote "Cat 15W40" and Azure read it all as Viscosidade = "cat 15440").
