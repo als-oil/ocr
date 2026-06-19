@@ -2986,18 +2986,25 @@ def _require_secret(name: str) -> str:
         st.stop()
     return val
 
-ENDPOINT = _require_secret("AZURE_DI_ENDPOINT")
-KEY      = _require_secret("AZURE_DI_KEY")
-try:
-    MODEL_ID = st.secrets["AZURE_DI_MODEL_ID"]
-except Exception:
-    MODEL_ID = "oil-card3"
+def _get_model_id() -> str:
+    try:
+        return st.secrets["AZURE_DI_MODEL_ID"]
+    except Exception:
+        return "oil-card3"
 
-di_client = DocumentAnalysisClient(ENDPOINT, AzureKeyCredential(KEY))
+
+@st.cache_resource(show_spinner=False)
+def _get_di_client():
+    """Create the Azure client lazily (on first use), NOT at import time.
+    Keeps the app from crashing on startup if Secrets aren't set yet."""
+    endpoint = _require_secret("AZURE_DI_ENDPOINT")
+    key      = _require_secret("AZURE_DI_KEY")
+    return DocumentAnalysisClient(endpoint, AzureKeyCredential(key))
 
 
 def analyze_bytes(file_bytes: bytes):
-    poller = di_client.begin_analyze_document(MODEL_ID, document=file_bytes)
+    client = _get_di_client()
+    poller = client.begin_analyze_document(_get_model_id(), document=file_bytes)
     return poller.result()
 
 
@@ -3139,6 +3146,7 @@ def extract_records_from_upload(
 # ============================================================
 # 5) STREAMLIT UI
 # ============================================================
+st.set_page_config(page_title="OCR – Cartão de Óleo", page_icon="🛢️", layout="centered")
 st.title("OCR – Cartão de Óleo → Excel")
 st.caption("Fluxo: enviar arquivo → extrair → baixar Excel. (Ignora páginas que não são formulário.)")
 
