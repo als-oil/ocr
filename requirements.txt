@@ -1,12 +1,16 @@
-streamlit
-azure-ai-formrecognizer
-azure-core
-openpyxl
-pandas
-pymupdf
-pillow
-numpy
-opencv-python-headless
-# easyocr é um fallback opcional. Fica fora do deploy padrão porque puxa
-# torch + CUDA (~vários GB) e estoura a memória no Streamlit Cloud grátis.
+# Versões fixadas e estáveis (stack 2024) para deploy reproduzível.
+# IMPORTANTE: use Python 3.12 no Streamlit Cloud (Advanced settings → Python version).
+# numpy<2 + estas versões evitam o crash binário que ocorre com os pacotes
+# bleeding-edge (numpy 2.4 / pandas 3.0 / pyarrow 24) em Python 3.13.
+streamlit==1.39.0
+azure-ai-formrecognizer==3.3.3
+azure-core==1.32.0
+openpyxl==3.1.5
+pandas==2.2.3
+numpy==1.26.4
+pymupdf==1.24.10
+pillow==10.4.0
+opencv-python-headless==4.10.0.84
+
+# easyocr é um fallback opcional; fica fora do deploy (puxa torch+CUDA, ~GB).
 # Para usar localmente: pip install easyocr
