@@ -7,4 +7,6 @@ pymupdf
 pillow
 numpy
 opencv-python-headless
-easyocr
+# easyocr é um fallback opcional. Fica fora do deploy padrão porque puxa
+# torch + CUDA (~vários GB) e estoura a memória no Streamlit Cloud grátis.
+# Para usar localmente: pip install easyocr

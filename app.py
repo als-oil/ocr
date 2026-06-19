@@ -2968,9 +2968,30 @@ def _is_probably_form_page(pil_img) -> bool:
 # ============================================================
 # 4) AZURE DOCUMENT INTELLIGENCE
 # ============================================================
-ENDPOINT = st.secrets["AZURE_DI_ENDPOINT"]
-KEY      = st.secrets["AZURE_DI_KEY"]
-MODEL_ID = st.secrets["AZURE_DI_MODEL_ID"]
+def _require_secret(name: str) -> str:
+    """Read a secret without crashing the whole app at import time. Shows a clear
+    message and stops the script if it's missing/empty (e.g. Secrets not yet set
+    on Streamlit Cloud)."""
+    try:
+        val = st.secrets[name]
+    except Exception:
+        val = ""
+    if not val:
+        st.error(
+            f"⚠️ Configuração ausente: **{name}**.\n\n"
+            "Defina os secrets do Azure (Endpoint, Key e Model ID) em "
+            "**Manage app → Settings → Secrets** (ou no `.streamlit/secrets.toml` local) "
+            "e reinicie o app."
+        )
+        st.stop()
+    return val
+
+ENDPOINT = _require_secret("AZURE_DI_ENDPOINT")
+KEY      = _require_secret("AZURE_DI_KEY")
+try:
+    MODEL_ID = st.secrets["AZURE_DI_MODEL_ID"]
+except Exception:
+    MODEL_ID = "oil-card3"
 
 di_client = DocumentAnalysisClient(ENDPOINT, AzureKeyCredential(KEY))
 
