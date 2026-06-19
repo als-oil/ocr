@@ -1,6 +1,7 @@
 [server]
-headless = false
+# headless=true é obrigatório em servidor (Streamlit Cloud): evita o prompt
+# interativo de e-mail no boot, que trava o app e gera "connection refused".
+headless = true
 
 [browser]
-serverAddress = "localhost"
 gatherUsageStats = false
