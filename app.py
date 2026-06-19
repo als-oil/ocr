@@ -597,7 +597,8 @@ KNOWN_OIL_NAMES: list[str] = [
 _OIL_KNOWN_LOWER = {n.lower(): n for n in KNOWN_OIL_NAMES}
 
 # OCR char substitution for viscosity prefix (before the W)
-_VIS_OCR_PREFIX = {"I": "1", "i": "1", "l": "1", "L": "1", "O": "0", "o": "0", "S": "5", "s": "5"}
+_VIS_OCR_PREFIX = {"I": "1", "i": "1", "l": "1", "L": "1", "J": "1", "j": "1",
+                   "O": "0", "o": "0", "S": "5", "s": "5"}
 # OCR char substitution for viscosity suffix (after the W — digits only)
 # Extended to cover common misreads seen in handwritten Brazilian forms:
 #   g/G → 4  (handwritten 4 looks like g)
@@ -831,13 +832,23 @@ def _normalize_viscosity(v: str) -> str:
     s = (v or "").strip()
     if not s:
         return ""
+    # Drop a leaked field label ("Viscosidade IsW 40" → "IsW 40").
+    s = re.sub(r"(?i)^viscosidade[s]?\s*[:\-]?\s*", "", s).strip()
     s = re.sub(r"(?i)\b(sint[ée]tico|sint\.?|mineral|semi[-\s]?sint\.?)\b", "", s)
     s = re.sub(r"(?i)\bUG\b", "VG", s)
     if re.search(r"(?i)\bVG\b", s) and not re.search(r"(?i)\biso\b", s):
         s = re.sub(r"(?i)\bVG\b", "ISO VG", s, count=1)
     s = re.sub(r"(?<![A-Za-z])(\d{1,3})\s*[Ww]\s*(\d{2,3})(?!\d)", r"\1W\2", s)
-    s = re.sub(r"\s{2,}", " ", s)
-    return s.strip(" .")
+    s = re.sub(r"\s{2,}", " ", s).strip(" .")
+
+    # SAE grade with OCR-letter prefix ("ISW40", "JSW40" → "15W40"): when the value
+    # has a W-grade shape but letters before the W, let _parse_viscosity fix the
+    # digits via _VIS_OCR_PREFIX (I→1, S→5, J→1, ...).
+    if re.search(r"[A-Za-z]", s) and re.search(r"[Ww]\s*\d", s):
+        parsed = _parse_viscosity(re.sub(r"\s+", "", s))
+        if parsed:
+            return parsed
+    return s
 
 
 def _normalize_oil_description(text: str) -> str:
@@ -2858,8 +2869,10 @@ def fields_to_record(fields: dict, page=None, confidences: dict = None, page_byt
     # "Rimula Rf4C 154140" → "RIMULA R4").
     _fab_val = record.get("Fabricante (Óleo)", "")
     if _fab_val:
+        # cutoff 0.75: pega erros de OCR próximos ("retronos"/"Pedronos"→"Petronas",
+        # ratio 0.75) mas rejeita matches duvidosos ("ELBER"→"KLUBER" é só 0.727).
         _corr, _matched = _fuzzy_match_reference(
-            _fab_val, _fab_map, cutoff=0.82, match_first_token=True
+            _fab_val, _fab_map, cutoff=0.75, match_first_token=True
         )
         if not _matched:
             _corr2, _matched2 = _fuzzy_match_reference(
