@@ -2595,9 +2595,9 @@ def fields_to_record(fields: dict, page=None, confidences: dict = None, page_byt
         re.I,
     )
     _LABEL_ONLY = re.compile(
-        r"^(frota\s*[/\-]?\s*tag?|frotal?|tag\s*frota"
+        r"^(frota\s*[/\-]?\s*tags?|tags?\s*[/\-]?\s*frota|frotal?|tags?"
         r"|s[eé]rie\s*[/\-]?\s*chassi|chassi\s*[/\-]?\s*s[eé]rie"
-        r"|s[eé]rie|chassi"
+        r"|s[eé]rie|chassi|chasis?|chassis"
         r"|equipamento|modelo|fabricante|cliente|cnpj|obra)[\s:/()]*$",
         re.I,
     )
