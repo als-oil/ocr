@@ -1,0 +1,10 @@
+streamlit
+azure-ai-formrecognizer
+azure-core
+openpyxl
+pandas
+pymupdf
+pillow
+numpy
+opencv-python-headless
+easyocr

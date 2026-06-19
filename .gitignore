@@ -1,0 +1,29 @@
+# Secrets — NEVER commit (contains Azure Document Intelligence keys)
+.streamlit/secrets.toml
+
+# Virtual environments
+.venv/
+.venv-1/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local test artifacts
+resultado_*.csv
+resultado_*.xlsx
+*_20paginas.pdf
+form/
+
+# Internal notes (may reference internal endpoints)
+memory/
